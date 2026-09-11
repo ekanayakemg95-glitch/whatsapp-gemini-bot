@@ -1,6 +1,6 @@
 import os
 import requests
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, BackgroundTasks
 import google.generativeai as genai
 
 app = FastAPI()
@@ -14,7 +14,27 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# /webhook වෙනුවට /api/webhook ලෙස වෙනස් කරන ලදී
+# Gemini AI response & WhatsApp message process එක පසුබිමෙන් (Background) සිදුකිරීම
+def process_whatsapp_message(msg_body: str, from_number: str):
+    try:
+        response = model.generate_content(msg_body)
+        reply_text = response.text
+
+        url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+        headers = {
+            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": from_number,
+            "type": "text",
+            "text": {"body": reply_text}
+        }
+        requests.post(url, json=payload, headers=headers)
+    except Exception as e:
+        print(f"Error processing message: {e}")
+
 @app.get("/api/webhook")
 async def verify_webhook(request: Request):
     params = request.query_params
@@ -22,9 +42,8 @@ async def verify_webhook(request: Request):
         return Response(content=params.get("hub.challenge"), status_code=200, media_type="text/plain")
     return Response(content="Verification failed", status_code=403)
 
-# /webhook වෙනුවට /api/webhook ලෙස වෙනස් කරන ලදී
 @app.post("/api/webhook")
-async def webhook(request: Request):
+async def webhook(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     
     try:
@@ -35,22 +54,9 @@ async def webhook(request: Request):
             msg_body = message.get('text', {}).get('body', '')
 
             if msg_body:
-                response = model.generate_content(msg_body)
-                reply_text = response.text
-
-                url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-                headers = {
-                    "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "messaging_product": "whatsapp",
-                    "to": from_number,
-                    "type": "text",
-                    "text": {"body": reply_text}
-                }
-                requests.post(url, json=payload, headers=headers)
+                # Meta එකට 200 OK වහාම යවා, Gemini task එක background එකෙන් දුවන්න සැලැස්වීම
+                background_tasks.add_task(process_whatsapp_message, msg_body, from_number)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error parsing webhook: {e}")
         
-    return {"status": "ok"}
+    return Response(content="EVENT_RECEIVED", status_code=200)
