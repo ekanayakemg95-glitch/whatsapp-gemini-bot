@@ -14,14 +14,16 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-@app.get("/webhook")
+# /webhook වෙනුවට /api/webhook ලෙස වෙනස් කරන ලදී
+@app.get("/api/webhook")
 async def verify_webhook(request: Request):
     params = request.query_params
     if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
-        return Response(content=params.get("hub.challenge"), status_code=200)
+        return Response(content=params.get("hub.challenge"), status_code=200, media_type="text/plain")
     return Response(content="Verification failed", status_code=403)
 
-@app.post("/webhook")
+# /webhook වෙනුවට /api/webhook ලෙස වෙනස් කරන ලදී
+@app.post("/api/webhook")
 async def webhook(request: Request):
     data = await request.json()
     
