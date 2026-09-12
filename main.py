@@ -43,19 +43,14 @@ def home():
 # ==============================
 
 @app.get("/api/webhook")
-def verify_webhook(
-    hub_mode: str = None,
-    hub_verify_token: str = None,
-    hub_challenge: str = None
-):
-    """
-    Meta WhatsApp webhook verification
-    """
+async def verify_webhook(request: Request):
 
-    # Meta sends these as:
-    # hub.mode
-    # hub.verify_token
-    # hub.challenge
+    hub_mode = request.query_params.get("hub.mode")
+    hub_verify_token = request.query_params.get("hub.verify_token")
+    hub_challenge = request.query_params.get("hub.challenge")
+
+    print("Webhook verification request")
+    print("Mode:", hub_mode)
 
     if (
         hub_mode == "subscribe"
@@ -80,12 +75,11 @@ def verify_webhook(
 async def receive_webhook(request: Request):
 
     try:
+
         data = await request.json()
 
         print("Incoming WhatsApp Data:")
         print(data)
-
-        # Check WhatsApp message structure
 
         entry = data.get("entry", [])
 
@@ -106,20 +100,16 @@ async def receive_webhook(request: Request):
 
         message = messages[0]
 
-        # Customer WhatsApp number
         customer_number = message.get("from")
 
-        # Message type
         message_type = message.get("type")
 
-        # Only process text messages
         if message_type != "text":
             return {
                 "status": "ignored",
                 "reason": "Only text messages are supported"
             }
 
-        # Get customer's message
         customer_message = (
             message.get("text", {})
             .get("body", "")
@@ -128,13 +118,19 @@ async def receive_webhook(request: Request):
         print("Customer:", customer_number)
         print("Message:", customer_message)
 
+
         # ==============================
         # Send message to Gemini
         # ==============================
 
         if not gemini_client:
+
             print("Gemini API key is missing")
-            return {"status": "gemini_api_key_missing"}
+
+            return {
+                "status": "gemini_api_key_missing"
+            }
+
 
         system_instruction = """
 You are a helpful WhatsApp customer service AI assistant.
@@ -150,6 +146,7 @@ Rules:
 - If you do not know something, politely say that a human staff member can help.
 """
 
+
         prompt = f"""
 {system_instruction}
 
@@ -159,6 +156,7 @@ Customer message:
 Write a helpful WhatsApp reply.
 """
 
+
         response = gemini_client.models.generate_content(
             model="gemini-3.8-flash",
             contents=prompt
@@ -166,14 +164,21 @@ Write a helpful WhatsApp reply.
 
         ai_reply = response.text
 
+
         if not ai_reply:
-            ai_reply = "කරුණාකර මොහොතක් රැඳී සිටින්න. අපගේ කාර්ය මණ්ඩලය ඔබට පිළිතුරු ලබා දෙනු ඇත."
+
+            ai_reply = (
+                "කරුණාකර මොහොතක් රැඳී සිටින්න. "
+                "අපගේ කාර්ය මණ්ඩලය ඔබට පිළිතුරු ලබා දෙනු ඇත."
+            )
+
 
         print("Gemini Reply:")
         print(ai_reply)
 
+
         # ==============================
-        # Send Gemini reply to WhatsApp
+        # Send reply to WhatsApp
         # ==============================
 
         whatsapp_url = (
@@ -202,14 +207,17 @@ Write a helpful WhatsApp reply.
             timeout=20
         )
 
+
         print("WhatsApp API Response:")
         print(whatsapp_response.status_code)
         print(whatsapp_response.text)
+
 
         return {
             "status": "success",
             "whatsapp_status": whatsapp_response.status_code
         }
+
 
     except Exception as e:
 
