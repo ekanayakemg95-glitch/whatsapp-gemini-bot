@@ -1,62 +1,222 @@
-import os
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
+from google import genai
 import requests
-from fastapi import FastAPI, Request, Response, BackgroundTasks
-import google.generativeai as genai
+import os
 
 app = FastAPI()
 
+# ==============================
 # Environment Variables
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "my_secret_token_123")
+# ==============================
+
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Gemini AI response & WhatsApp message process එක පසුබිමෙන් (Background) සිදුකිරීම
-def process_whatsapp_message(msg_body: str, from_number: str):
+# ==============================
+# Gemini AI Client
+# ==============================
+
+if GEMINI_API_KEY:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+else:
+    gemini_client = None
+
+
+# ==============================
+# Home / Health Check
+# ==============================
+
+@app.get("/")
+def home():
+    return {
+        "status": "online",
+        "message": "WhatsApp Gemini AI Chatbot is running!"
+    }
+
+
+# ==============================
+# WhatsApp Webhook Verification
+# ==============================
+
+@app.get("/api/webhook")
+def verify_webhook(
+    hub_mode: str = None,
+    hub_verify_token: str = None,
+    hub_challenge: str = None
+):
+    """
+    Meta WhatsApp webhook verification
+    """
+
+    # Meta sends these as:
+    # hub.mode
+    # hub.verify_token
+    # hub.challenge
+
+    if (
+        hub_mode == "subscribe"
+        and hub_verify_token == VERIFY_TOKEN
+    ):
+        return PlainTextResponse(
+            content=hub_challenge or "",
+            status_code=200
+        )
+
+    return PlainTextResponse(
+        content="Verification failed",
+        status_code=403
+    )
+
+
+# ==============================
+# Receive WhatsApp Messages
+# ==============================
+
+@app.post("/api/webhook")
+async def receive_webhook(request: Request):
+
     try:
-        response = model.generate_content(msg_body)
-        reply_text = response.text
+        data = await request.json()
 
-        url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+        print("Incoming WhatsApp Data:")
+        print(data)
+
+        # Check WhatsApp message structure
+
+        entry = data.get("entry", [])
+
+        if not entry:
+            return {"status": "no entry"}
+
+        changes = entry[0].get("changes", [])
+
+        if not changes:
+            return {"status": "no changes"}
+
+        value = changes[0].get("value", {})
+
+        messages = value.get("messages", [])
+
+        if not messages:
+            return {"status": "no message"}
+
+        message = messages[0]
+
+        # Customer WhatsApp number
+        customer_number = message.get("from")
+
+        # Message type
+        message_type = message.get("type")
+
+        # Only process text messages
+        if message_type != "text":
+            return {
+                "status": "ignored",
+                "reason": "Only text messages are supported"
+            }
+
+        # Get customer's message
+        customer_message = (
+            message.get("text", {})
+            .get("body", "")
+        )
+
+        print("Customer:", customer_number)
+        print("Message:", customer_message)
+
+        # ==============================
+        # Send message to Gemini
+        # ==============================
+
+        if not gemini_client:
+            print("Gemini API key is missing")
+            return {"status": "gemini_api_key_missing"}
+
+        system_instruction = """
+You are a helpful WhatsApp customer service AI assistant.
+
+You are helping customers of Yasoda Technology.
+
+Rules:
+- Reply in the same language used by the customer.
+- If the customer writes Sinhala, reply in Sinhala.
+- If the customer writes English, reply in English.
+- Be polite, friendly and concise.
+- Do not make up product prices, warranty information or stock information.
+- If you do not know something, politely say that a human staff member can help.
+"""
+
+        prompt = f"""
+{system_instruction}
+
+Customer message:
+{customer_message}
+
+Write a helpful WhatsApp reply.
+"""
+
+        response = gemini_client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt
+        )
+
+        ai_reply = response.text
+
+        if not ai_reply:
+            ai_reply = "කරුණාකර මොහොතක් රැඳී සිටින්න. අපගේ කාර්ය මණ්ඩලය ඔබට පිළිතුරු ලබා දෙනු ඇත."
+
+        print("Gemini Reply:")
+        print(ai_reply)
+
+        # ==============================
+        # Send Gemini reply to WhatsApp
+        # ==============================
+
+        whatsapp_url = (
+            f"https://graph.facebook.com/v23.0/"
+            f"{PHONE_NUMBER_ID}/messages"
+        )
+
         headers = {
             "Authorization": f"Bearer {WHATSAPP_TOKEN}",
             "Content-Type": "application/json"
         }
-        payload = {
+
+        whatsapp_data = {
             "messaging_product": "whatsapp",
-            "to": from_number,
+            "to": customer_number,
             "type": "text",
-            "text": {"body": reply_text}
+            "text": {
+                "body": ai_reply
+            }
         }
-        requests.post(url, json=payload, headers=headers)
+
+        whatsapp_response = requests.post(
+            whatsapp_url,
+            headers=headers,
+            json=whatsapp_data,
+            timeout=20
+        )
+
+        print("WhatsApp API Response:")
+        print(whatsapp_response.status_code)
+        print(whatsapp_response.text)
+
+        return {
+            "status": "success",
+            "whatsapp_status": whatsapp_response.status_code
+        }
+
     except Exception as e:
-        print(f"Error processing message: {e}")
 
-@app.get("/api/webhook")
-async def verify_webhook(request: Request):
-    params = request.query_params
-    if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
-        return Response(content=params.get("hub.challenge"), status_code=200, media_type="text/plain")
-    return Response(content="Verification failed", status_code=403)
+        print("ERROR:")
+        print(str(e))
 
-@app.post("/api/webhook")
-async def webhook(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
-    
-    try:
-        entry = data['entry'][0]['changes'][0]['value']
-        if 'messages' in entry:
-            message = entry['messages'][0]
-            from_number = message['from']
-            msg_body = message.get('text', {}).get('body', '')
-
-            if msg_body:
-                # Meta එකට 200 OK වහාම යවා, Gemini task එක background එකෙන් දුවන්න සැලැස්වීම
-                background_tasks.add_task(process_whatsapp_message, msg_body, from_number)
-    except Exception as e:
-        print(f"Error parsing webhook: {e}")
-        
-    return Response(content="EVENT_RECEIVED", status_code=200)
+        return {
+            "status": "error",
+            "message": str(e)
+        }
