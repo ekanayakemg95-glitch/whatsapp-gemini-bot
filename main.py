@@ -182,7 +182,7 @@ Write a helpful WhatsApp reply.
         # ==============================
 
         whatsapp_url = (
-            f"https://graph.facebook.com/v23.0/"
+            f"https://graph.facebook.com/v26.0/"
             f"{PHONE_NUMBER_ID}/messages"
         )
 
