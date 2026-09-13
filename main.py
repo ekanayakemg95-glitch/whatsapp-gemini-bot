@@ -3,6 +3,7 @@ from fastapi.responses import PlainTextResponse
 from google import genai
 import requests
 import os
+import time
 
 app = FastAPI()
 
@@ -43,15 +44,11 @@ def home():
 # ==============================
 
 @app.get("/api/webhook")
-async def verify_webhook(request: Request):
-
-    hub_mode = request.query_params.get("hub.mode")
-    hub_verify_token = request.query_params.get("hub.verify_token")
-    hub_challenge = request.query_params.get("hub.challenge")
-
-    print("Webhook verification request")
-    print("Mode:", hub_mode)
-
+def verify_webhook(
+    hub_mode: str = None,
+    hub_verify_token: str = None,
+    hub_challenge: str = None
+):
     if (
         hub_mode == "subscribe"
         and hub_verify_token == VERIFY_TOKEN
@@ -75,7 +72,6 @@ async def verify_webhook(request: Request):
 async def receive_webhook(request: Request):
 
     try:
-
         data = await request.json()
 
         print("Incoming WhatsApp Data:")
@@ -92,7 +88,6 @@ async def receive_webhook(request: Request):
             return {"status": "no changes"}
 
         value = changes[0].get("value", {})
-
         messages = value.get("messages", [])
 
         if not messages:
@@ -101,7 +96,6 @@ async def receive_webhook(request: Request):
         message = messages[0]
 
         customer_number = message.get("from")
-
         message_type = message.get("type")
 
         if message_type != "text":
@@ -118,19 +112,13 @@ async def receive_webhook(request: Request):
         print("Customer:", customer_number)
         print("Message:", customer_message)
 
-
         # ==============================
-        # Send message to Gemini
+        # Check Gemini
         # ==============================
 
         if not gemini_client:
-
             print("Gemini API key is missing")
-
-            return {
-                "status": "gemini_api_key_missing"
-            }
-
+            return {"status": "gemini_api_key_missing"}
 
         system_instruction = """
 You are a helpful WhatsApp customer service AI assistant.
@@ -146,7 +134,6 @@ Rules:
 - If you do not know something, politely say that a human staff member can help.
 """
 
-
         prompt = f"""
 {system_instruction}
 
@@ -156,33 +143,51 @@ Customer message:
 Write a helpful WhatsApp reply.
 """
 
+        # ==============================
+        # Gemini Request with Retry
+        # ==============================
 
-        response = gemini_client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt
-        )
+        ai_reply = None
 
-        ai_reply = response.text
+        for attempt in range(3):
 
+            try:
+                print(f"Gemini attempt: {attempt + 1}")
+
+                response = gemini_client.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=prompt
+                )
+
+                ai_reply = response.text
+
+                if ai_reply:
+                    break
+
+            except Exception as e:
+
+                print("Gemini error:")
+                print(str(e))
+
+                if attempt < 2:
+                    print("Retrying Gemini...")
+                    time.sleep(2)
 
         if not ai_reply:
-
             ai_reply = (
                 "කරුණාකර මොහොතක් රැඳී සිටින්න. "
                 "අපගේ කාර්ය මණ්ඩලය ඔබට පිළිතුරු ලබා දෙනු ඇත."
             )
 
-
         print("Gemini Reply:")
         print(ai_reply)
 
-
         # ==============================
-        # Send reply to WhatsApp
+        # Send Reply to WhatsApp
         # ==============================
 
         whatsapp_url = (
-            f"https://graph.facebook.com/v26.0/"
+            f"https://graph.facebook.com/v23.0/"
             f"{PHONE_NUMBER_ID}/messages"
         )
 
@@ -207,17 +212,14 @@ Write a helpful WhatsApp reply.
             timeout=20
         )
 
-
         print("WhatsApp API Response:")
         print(whatsapp_response.status_code)
         print(whatsapp_response.text)
-
 
         return {
             "status": "success",
             "whatsapp_status": whatsapp_response.status_code
         }
-
 
     except Exception as e:
 
